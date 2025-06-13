@@ -6,6 +6,8 @@ import { Pane } from 'tweakpane';
 // App state
 let scene, camera, renderer, orbitControls, transformControls;
 let selectedObject = null;
+let currentMode = 'OBJECT'; // 'OBJECT' or 'EDIT'
+let vertexHelpers = null;
 const mouse = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 const sceneObjects = [];
@@ -14,6 +16,7 @@ const sceneObjects = [];
 const viewportContainer = document.getElementById('viewport-container');
 const outlinerList = document.getElementById('outliner-list');
 const propertiesPanelContainer = document.getElementById('properties-panel-container');
+const modeSelect = document.getElementById('mode-select');
 
 // Properties Pane
 let pane;
@@ -90,20 +93,35 @@ function updateOutliner() {
 function selectObject(object) {
     if (selectedObject === object) return;
     
+    // If we are in edit mode when selecting a new object, switch to object mode first
+    if (currentMode === 'EDIT') {
+        setMode('OBJECT');
+    }
+
     selectedObject = object;
     transformControls.attach(object);
     setupTweakpaneForObject(object);
     updateOutliner();
+
+    modeSelect.options[1].disabled = false;
 }
 
 function deselectObject() {
     if (!selectedObject) return;
+
+    if (currentMode === 'EDIT') {
+        setMode('OBJECT');
+    }
+    
     selectedObject = null;
     transformControls.detach();
     if (pane) pane.dispose();
     pane = null;
     refreshPane = () => {};
     updateOutliner();
+
+    modeSelect.value = 'OBJECT';
+    modeSelect.options[1].disabled = true;
 }
 
 function setupTweakpaneForObject(object) {
@@ -151,6 +169,8 @@ function setupTweakpaneForObject(object) {
     matFolder.addBinding(object.material, 'metalness', { min: 0, max: 1 });
     matFolder.addBinding(object.material, 'roughness', { min: 0, max: 1 });
     matFolder.addBinding(object.material, 'wireframe');
+    
+    pane.element.style.display = 'block';
 
     refreshPane = () => {
         if (!pane || !object) return;
@@ -174,16 +194,34 @@ function addEventListeners() {
     });
 
     window.addEventListener('keydown', event => {
-        if (event.target !== document.body) return; // Ignore inputs in text fields etc.
+        const activeEl = document.activeElement;
+        // Ignore key events if an input is focused
+        if (activeEl && (activeEl.tagName.toLowerCase() === 'input' || activeEl.tagName.toLowerCase() === 'select' || activeEl.tagName.toLowerCase() === 'textarea')) {
+            return;
+        }
+
         switch (event.key.toLowerCase()) {
-            case 't': transformControls.setMode('translate'); break;
-            case 'r': transformControls.setMode('rotate'); break;
-            case 's': transformControls.setMode('scale'); break;
+            case 't': if (currentMode === 'OBJECT') transformControls.setMode('translate'); break;
+            case 'r': if (currentMode === 'OBJECT') transformControls.setMode('rotate'); break;
+            case 's': if (currentMode === 'OBJECT') transformControls.setMode('scale'); break;
             case 'escape': deselectObject(); break;
+            case 'tab':
+                event.preventDefault(); // Prevent focus change
+                if(selectedObject){
+                    const newMode = currentMode === 'OBJECT' ? 'EDIT' : 'OBJECT';
+                    setMode(newMode);
+                }
+                break;
         }
     });
     
     viewportContainer.addEventListener('pointerdown', onPointerDown);
+
+    modeSelect.addEventListener('change', (e) => {
+        if (selectedObject) {
+            setMode(e.target.value);
+        }
+    });
 }
 
 function onWindowResize() {
@@ -194,6 +232,12 @@ function onWindowResize() {
 
 function onPointerDown(event) {
     if (transformControls.dragging || event.button !== 0) return;
+
+    if (currentMode === 'EDIT') {
+        // In Edit Mode, clicking doesn't select objects.
+        // Vertex selection logic will go here in the future.
+        return;
+    }
     
     const rect = renderer.domElement.getBoundingClientRect();
     mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
@@ -220,6 +264,57 @@ function animate() {
     renderer.render(scene, camera);
 }
 
+function setMode(newMode) {
+    if (currentMode === newMode || !selectedObject) return;
+
+    currentMode = newMode;
+    modeSelect.value = newMode;
+
+    if (newMode === 'EDIT') {
+        // --- Enter Edit Mode ---
+        transformControls.detach();
+        if(pane) pane.element.style.display = 'none';
+
+        // Store original material state and apply edit mode look
+        if (!selectedObject.userData.originalMaterialProps) {
+             selectedObject.userData.originalMaterialProps = {
+                wireframe: selectedObject.material.wireframe || false
+            };
+        }
+        selectedObject.material.wireframe = true;
+
+        // Create vertex helpers
+        const pointsMaterial = new THREE.PointsMaterial({
+            color: 0xffff00,
+            size: 8,
+            sizeAttenuation: false, // size in pixels
+            depthTest: false, // always visible
+        });
+        vertexHelpers = new THREE.Points(selectedObject.geometry, pointsMaterial);
+        vertexHelpers.name = "VertexHelpers";
+        vertexHelpers.renderOrder = 1; // render on top of mesh
+        selectedObject.add(vertexHelpers);
+
+    } else { // --- Enter Object Mode ---
+        if(pane) pane.element.style.display = 'block';
+        
+        if (vertexHelpers && selectedObject) {
+            selectedObject.remove(vertexHelpers);
+            vertexHelpers.material.dispose();
+            // We don't dispose geometry because it's shared with the mesh
+            vertexHelpers = null;
+
+            // Restore material
+            if(selectedObject.userData.originalMaterialProps) {
+                selectedObject.material.wireframe = selectedObject.userData.originalMaterialProps.wireframe;
+            }
+        }
+
+        if (selectedObject) {
+            transformControls.attach(selectedObject);
+        }
+    }
+}
+
 init();
 document.body.focus();
-

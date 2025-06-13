@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Web Blender</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/",
+            "tweakpane": "https://cdn.jsdelivr.net/npm/tweakpane@4.0.3/dist/tweakpane.min.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <div id="app-container">
+        <header id="main-header">
+            <h1>Web Blender</h1>
+            <div id="info">
+                <span>Select the cube by clicking on it.</span>
+                <span><b>T</b>: Translate | <b>R</b>: Rotate | <b>S</b>: Scale | <b>Esc</b>: Deselect</span>
+            </div>
+        </header>
+        <aside id="left-panel">
+            <h2>Outliner</h2>
+            <ul id="outliner-list">
+                <!-- Scene objects will be listed here -->
+            </ul>
+        </aside>
+        <main id="viewport-container"></main>
+        <aside id="right-panel">
+            <h2>Properties</h2>
+            <div id="properties-panel-container"></div>
+        </aside>
+    </div>
+    <script type="module" src="main.js"></script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
+

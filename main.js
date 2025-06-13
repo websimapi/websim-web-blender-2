@@ -1,22 +1,38 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { BufferGeometryUtils } from 'three/addons/utils/BufferGeometryUtils.js';
 import { Pane } from 'tweakpane';
 
 // App state
 let scene, camera, renderer, orbitControls, transformControls;
 let selectedObject = null;
 let currentMode = 'OBJECT'; // 'OBJECT' or 'EDIT'
-let vertexHelpers = null;
 const mouse = new THREE.Vector2();
 const raycaster = new THREE.Raycaster();
 const sceneObjects = [];
+
+// Edit mode state
+let editSelectionMode = 'VERTEX'; // 'VERTEX', 'EDGE', 'FACE'
+let vertexHelpers, faceHighlightHelper, selectedEdgeHelper;
+const selections = {
+    vertices: new Set(),
+    edges: new Set(), // Storing edge keys 'v1-v2'
+    faces: new Set()
+};
+let allEdges = new Map();
 
 // DOM Elements
 const viewportContainer = document.getElementById('viewport-container');
 const outlinerList = document.getElementById('outliner-list');
 const propertiesPanelContainer = document.getElementById('properties-panel-container');
 const modeSelect = document.getElementById('mode-select');
+const editModeTools = document.getElementById('edit-mode-tools');
+const editToolBtns = {
+    vertex: document.getElementById('select-vertex-btn'),
+    edge: document.getElementById('select-edge-btn'),
+    face: document.getElementById('select-face-btn'),
+};
 
 // Properties Pane
 let pane;
@@ -60,7 +76,9 @@ function init() {
     scene.add(transformControls);
 
     // Initial Object
-    const geometry = new THREE.BoxGeometry(1, 1, 1);
+    let geometry = new THREE.BoxGeometry(1, 1, 1);
+    // Convert to indexed geometry for proper editing
+    geometry = BufferGeometryUtils.mergeVertices(geometry);
     const material = new THREE.MeshStandardMaterial({ color: 0x3d8bfd, metalness: 0.1, roughness: 0.4 });
     const cube = new THREE.Mesh(geometry, material);
     cube.castShadow = true;
@@ -212,6 +230,9 @@ function addEventListeners() {
                     setMode(newMode);
                 }
                 break;
+            case '1': if (currentMode === 'EDIT') setEditSelectionMode('VERTEX'); break;
+            case '2': if (currentMode === 'EDIT') setEditSelectionMode('EDGE'); break;
+            case '3': if (currentMode === 'EDIT') setEditSelectionMode('FACE'); break;
         }
     });
     
@@ -222,6 +243,10 @@ function addEventListeners() {
             setMode(e.target.value);
         }
     });
+
+    editToolBtns.vertex.addEventListener('click', () => setEditSelectionMode('VERTEX'));
+    editToolBtns.edge.addEventListener('click', () => setEditSelectionMode('EDGE'));
+    editToolBtns.face.addEventListener('click', () => setEditSelectionMode('FACE'));
 }
 
 function onWindowResize() {
@@ -233,17 +258,16 @@ function onWindowResize() {
 function onPointerDown(event) {
     if (transformControls.dragging || event.button !== 0) return;
 
-    if (currentMode === 'EDIT') {
-        // In Edit Mode, clicking doesn't select objects.
-        // Vertex selection logic will go here in the future.
-        return;
-    }
-    
     const rect = renderer.domElement.getBoundingClientRect();
     mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
     mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
     raycaster.setFromCamera(mouse, camera);
+
+    if (currentMode === 'EDIT') {
+        handleEditModeClick(event.shiftKey);
+        return;
+    }
+    
     const intersects = raycaster.intersectObjects(sceneObjects, false);
 
     if (intersects.length > 0) {
@@ -264,6 +288,29 @@ function animate() {
     renderer.render(scene, camera);
 }
 
+function setEditSelectionMode(mode) {
+    if (editSelectionMode === mode) return;
+    editSelectionMode = mode;
+
+    // Clear selections when changing mode
+    clearAllSelections();
+
+    // Update button styles
+    Object.values(editToolBtns).forEach(btn => btn.classList.remove('active'));
+    if (mode === 'VERTEX') editToolBtns.vertex.classList.add('active');
+    if (mode === 'EDGE') editToolBtns.edge.classList.add('active');
+    if (mode === 'FACE') editToolBtns.face.classList.add('active');
+}
+
+function clearAllSelections() {
+    selections.vertices.clear();
+    selections.edges.clear();
+    selections.faces.clear();
+    updateVertexSelectionVisuals();
+    updateEdgeSelectionVisuals();
+    updateFaceSelectionVisuals();
+}
+
 function setMode(newMode) {
     if (currentMode === newMode || !selectedObject) return;
 
@@ -272,48 +319,221 @@ function setMode(newMode) {
 
     if (newMode === 'EDIT') {
         // --- Enter Edit Mode ---
+        editModeTools.style.display = 'flex';
+        setEditSelectionMode('VERTEX');
         transformControls.detach();
         if(pane) pane.element.style.display = 'none';
 
-        // Store original material state and apply edit mode look
-        if (!selectedObject.userData.originalMaterialProps) {
-             selectedObject.userData.originalMaterialProps = {
-                wireframe: selectedObject.material.wireframe || false
-            };
-        }
+        selectedObject.userData.originalWireframe = selectedObject.material.wireframe;
         selectedObject.material.wireframe = true;
+
+        preprocessGeometry(selectedObject.geometry);
 
         // Create vertex helpers
         const pointsMaterial = new THREE.PointsMaterial({
-            color: 0xffff00,
             size: 8,
             sizeAttenuation: false, // size in pixels
-            depthTest: false, // always visible
+            depthTest: false,
+            vertexColors: true,
         });
         vertexHelpers = new THREE.Points(selectedObject.geometry, pointsMaterial);
+        const numVertices = selectedObject.geometry.attributes.position.count;
+        const colors = new Float32Array(numVertices * 3);
+        vertexHelpers.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
         vertexHelpers.name = "VertexHelpers";
-        vertexHelpers.renderOrder = 1; // render on top of mesh
+        vertexHelpers.renderOrder = 2; // render on top
         selectedObject.add(vertexHelpers);
 
+        // Create face highlight helper
+        const highlightMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffa500, side: THREE.DoubleSide, transparent: true, opacity: 0.5, depthTest: false
+        });
+        faceHighlightHelper = new THREE.Mesh(new THREE.BufferGeometry(), highlightMaterial);
+        faceHighlightHelper.renderOrder = 1;
+        selectedObject.add(faceHighlightHelper);
+
+        // Create edge highlight helper
+        const selectedEdgeMaterial = new THREE.LineBasicMaterial({ color: 0xffa500, linewidth: 4, depthTest: false });
+        selectedEdgeHelper = new THREE.LineSegments(new THREE.BufferGeometry(), selectedEdgeMaterial);
+        selectedEdgeHelper.renderOrder = 2;
+        selectedObject.add(selectedEdgeHelper);
+
+        updateVertexSelectionVisuals();
+
     } else { // --- Enter Object Mode ---
+        editModeTools.style.display = 'none';
         if(pane) pane.element.style.display = 'block';
         
-        if (vertexHelpers && selectedObject) {
-            selectedObject.remove(vertexHelpers);
-            vertexHelpers.material.dispose();
-            // We don't dispose geometry because it's shared with the mesh
-            vertexHelpers = null;
-
-            // Restore material
-            if(selectedObject.userData.originalMaterialProps) {
-                selectedObject.material.wireframe = selectedObject.userData.originalMaterialProps.wireframe;
+        if (selectedObject) {
+            selectedObject.material.wireframe = selectedObject.userData.originalWireframe;
+            if(vertexHelpers) {
+                selectedObject.remove(vertexHelpers);
+                vertexHelpers.material.dispose();
+                vertexHelpers = null;
+            }
+            if(faceHighlightHelper) {
+                selectedObject.remove(faceHighlightHelper);
+                faceHighlightHelper.geometry.dispose();
+                faceHighlightHelper.material.dispose();
+                faceHighlightHelper = null;
+            }
+             if(selectedEdgeHelper) {
+                selectedObject.remove(selectedEdgeHelper);
+                selectedEdgeHelper.geometry.dispose();
+                selectedEdgeHelper.material.dispose();
+                selectedEdgeHelper = null;
             }
         }
+        clearAllSelections();
 
         if (selectedObject) {
             transformControls.attach(selectedObject);
         }
     }
+}
+
+// --- EDIT MODE HELPERS ---
+
+function preprocessGeometry(geometry) {
+    allEdges.clear();
+    const index = geometry.index;
+    const vertices = geometry.attributes.position;
+    if (!index) return; // Only works for indexed geometry for now
+
+    for (let i = 0; i < index.count; i += 3) {
+        const a = index.getX(i);
+        const b = index.getX(i + 1);
+        const c = index.getX(i + 2);
+
+        const edges = [[a, b], [b, c], [c, a]];
+        edges.forEach(edge => {
+            const key = edge[0] < edge[1] ? `${edge[0]}-${edge[1]}` : `${edge[1]}-${edge[0]}`;
+            if (!allEdges.has(key)) {
+                allEdges.set(key, edge);
+            }
+        });
+    }
+}
+
+function handleEditModeClick(isMultiSelect) {
+    let changed = false;
+    if (!isMultiSelect) {
+        // Instead of clearing all, we only clear the current selection type
+        // This allows seeing selected verts while selecting edges, for example.
+        // For now, let's clear for simplicity.
+        // selections[editSelectionMode + 's'].clear();
+    }
+    
+    if (editSelectionMode === 'VERTEX') {
+        const intersects = raycaster.intersectObject(vertexHelpers, false);
+        if (intersects.length > 0) {
+            const index = intersects[0].index;
+            if (!isMultiSelect) clearAllSelections();
+            if (selections.vertices.has(index)) selections.vertices.delete(index);
+            else selections.vertices.add(index);
+            changed = true;
+        }
+    } else if (editSelectionMode === 'FACE') {
+        const intersects = raycaster.intersectObject(selectedObject, false);
+        if (intersects.length > 0) {
+            const faceIndex = intersects[0].faceIndex;
+            if (!isMultiSelect) clearAllSelections();
+            if (selections.faces.has(faceIndex)) selections.faces.delete(faceIndex);
+            else selections.faces.add(faceIndex);
+            changed = true;
+        }
+    } else if (editSelectionMode === 'EDGE') {
+        const intersects = raycaster.intersectObject(selectedObject, false);
+        if (intersects.length > 0) {
+            const intersect = intersects[0];
+            const key = getClosestEdgeToPoint(intersect.face, intersect.point, selectedObject.geometry);
+            if (!isMultiSelect) clearAllSelections();
+            if (selections.edges.has(key)) selections.edges.delete(key);
+            else selections.edges.add(key);
+            changed = true;
+        }
+    }
+
+    if (!changed) {
+        clearAllSelections();
+    } else {
+        updateVertexSelectionVisuals();
+        updateEdgeSelectionVisuals();
+        updateFaceSelectionVisuals();
+    }
+}
+
+function updateVertexSelectionVisuals() {
+    if (!vertexHelpers) return;
+    const colors = vertexHelpers.geometry.attributes.color;
+    const UNSELECTED_COLOR = new THREE.Color(0xffff00); // Yellow
+    const SELECTED_COLOR = new THREE.Color(0xffa500); // Orange
+
+    for (let i = 0; i < colors.count; i++) {
+        const color = selections.vertices.has(i) ? SELECTED_COLOR : UNSELECTED_COLOR;
+        colors.setXYZ(i, color.r, color.g, color.b);
+    }
+    colors.needsUpdate = true;
+}
+
+function updateFaceSelectionVisuals() {
+    if (!faceHighlightHelper || !selectedObject) return;
+    const selectedFaces = Array.from(selections.faces);
+    if (selectedFaces.length === 0) {
+        faceHighlightHelper.geometry.setIndex([]);
+        faceHighlightHelper.geometry.setAttribute('position', new THREE.Float32BufferAttribute([], 3));
+        return;
+    }
+
+    const sourceGeom = selectedObject.geometry;
+    const newIndices = [];
+    selectedFaces.forEach(faceIndex => {
+        newIndices.push(sourceGeom.index.getX(faceIndex*3), sourceGeom.index.getX(faceIndex*3+1), sourceGeom.index.getX(faceIndex*3+2));
+    });
+
+    faceHighlightHelper.geometry.setIndex(newIndices);
+    faceHighlightHelper.geometry.setAttribute('position', sourceGeom.attributes.position); // Share positions
+    faceHighlightHelper.geometry.computeVertexNormals();
+}
+
+function updateEdgeSelectionVisuals() {
+    if (!selectedEdgeHelper || !selectedObject) return;
+    const vertices = [];
+    selections.edges.forEach(edgeKey => {
+        const [v1_idx, v2_idx] = allEdges.get(edgeKey);
+        const positions = selectedObject.geometry.attributes.position;
+        vertices.push(positions.getX(v1_idx), positions.getY(v1_idx), positions.getZ(v1_idx));
+        vertices.push(positions.getX(v2_idx), positions.getY(v2_idx), positions.getZ(v2_idx));
+    });
+    selectedEdgeHelper.geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
+}
+
+function getClosestEdgeToPoint(face, point, geometry) {
+    const pos = geometry.attributes.position;
+    const vA = new THREE.Vector3().fromBufferAttribute(pos, face.a);
+    const vB = new THREE.Vector3().fromBufferAttribute(pos, face.b);
+    const vC = new THREE.Vector3().fromBufferAttribute(pos, face.c);
+
+    const edges = [
+        { indices: [face.a, face.b], line: new THREE.Line3(vA, vB) },
+        { indices: [face.b, face.c], line: new THREE.Line3(vB, vC) },
+        { indices: [face.c, face.a], line: new THREE.Line3(vC, vA) },
+    ];
+
+    let minDistance = Infinity;
+    let closestEdge = null;
+    const tempPoint = new THREE.Vector3();
+
+    for (const edge of edges) {
+        edge.line.closestPointToPoint(point, true, tempPoint);
+        const dist = point.distanceTo(tempPoint);
+        if (dist < minDistance) {
+            minDistance = dist;
+            closestEdge = edge.indices;
+        }
+    }
+    
+    return closestEdge[0] < closestEdge[1] ? `${closestEdge[0]}-${closestEdge[1]}` : `${closestEdge[1]}-${closestEdge[0]}`;
 }
 
 init();

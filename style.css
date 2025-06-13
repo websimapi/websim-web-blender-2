@@ -27,7 +27,7 @@ body, html {
     background-color: #2a2a2a;
     border-bottom: 1px solid #111;
     display: grid;
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: auto auto 1fr auto;
     align-items: center;
     padding: 0 20px;
     z-index: 10;
@@ -40,7 +40,51 @@ body, html {
 }
 
 #mode-switcher {
-    justify-self: center;
+    justify-self: start;
+    margin-left: 20px;
+}
+
+#edit-mode-tools {
+    display: flex;
+    gap: 4px;
+    background-color: #1e1e1e;
+    border-radius: 5px;
+    padding: 3px;
+    margin-left: 12px;
+}
+
+.edit-tool-btn {
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 4px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.edit-tool-btn img {
+    width: 16px;
+    height: 16px;
+    opacity: 0.7;
+    filter: invert(1);
+}
+
+.edit-tool-btn:hover {
+    background-color: #4a4a4a;
+}
+
+.edit-tool-btn:hover img {
+    opacity: 1;
+}
+
+.edit-tool-btn.active {
+    background-color: #3d8bfd;
+}
+
+.edit-tool-btn.active img {
+    opacity: 1;
 }
 
 #mode-select {

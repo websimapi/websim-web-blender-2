@@ -363,15 +363,19 @@ function setMode(newMode) {
 
         // Create vertex helpers
         const pointsMaterial = new THREE.PointsMaterial({
-            size: 8,
+            size: 10,
             sizeAttenuation: false, // size in pixels
             depthTest: false,
             vertexColors: true,
+            transparent: true,
         });
-        vertexHelpers = new THREE.Points(selectedObject.geometry, pointsMaterial);
+        const helperGeometry = new THREE.BufferGeometry();
+        helperGeometry.setAttribute('position', selectedObject.geometry.attributes.position); // Share position buffer
+        
+        vertexHelpers = new THREE.Points(helperGeometry, pointsMaterial);
         const numVertices = selectedObject.geometry.attributes.position.count;
-        const colors = new Float32Array(numVertices * 3);
-        vertexHelpers.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+        const colors = new Float32Array(numVertices * 4); // RGBA
+        helperGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 4));
         vertexHelpers.name = "VertexHelpers";
         vertexHelpers.renderOrder = 2; // render on top
         selectedObject.add(vertexHelpers);
@@ -402,6 +406,7 @@ function setMode(newMode) {
             selectedObject.material.wireframe = selectedObject.userData.originalWireframe;
             if(vertexHelpers) {
                 selectedObject.remove(vertexHelpers);
+                vertexHelpers.geometry.dispose();
                 vertexHelpers.material.dispose();
                 vertexHelpers = null;
             }
@@ -456,11 +461,18 @@ function handleEditModeClick(isMultiSelect) {
         const intersects = raycaster.intersectObject(vertexHelpers, false);
         if (intersects.length > 0) {
             const index = intersects[0].index;
-            if (!isMultiSelect) clearAllSelections();
-            if (selections.vertices.has(index)) {
-                selections.vertices.delete(index);
+            if (!isMultiSelect) {
+                const isAlreadyOnlySelected = selections.vertices.size === 1 && selections.vertices.has(index);
+                if (!isAlreadyOnlySelected) {
+                    clearAllSelections();
+                    selections.vertices.add(index);
+                }
             } else {
-                selections.vertices.add(index);
+                if (selections.vertices.has(index)) {
+                    selections.vertices.delete(index);
+                } else {
+                    selections.vertices.add(index);
+                }
             }
             changed = true;
         }
@@ -468,11 +480,18 @@ function handleEditModeClick(isMultiSelect) {
         const intersects = raycaster.intersectObject(selectedObject, false);
         if (intersects.length > 0) {
             const faceIndex = intersects[0].faceIndex;
-            if (!isMultiSelect) clearAllSelections();
-            if (selections.faces.has(faceIndex)) {
-                selections.faces.delete(faceIndex);
+            if (!isMultiSelect) {
+                const isAlreadyOnlySelected = selections.faces.size === 1 && selections.faces.has(faceIndex);
+                if (!isAlreadyOnlySelected) {
+                    clearAllSelections();
+                    selections.faces.add(faceIndex);
+                }
             } else {
-                selections.faces.add(faceIndex);
+                if (selections.faces.has(faceIndex)) {
+                    selections.faces.delete(faceIndex);
+                } else {
+                    selections.faces.add(faceIndex);
+                }
             }
             changed = true;
         }
@@ -481,11 +500,18 @@ function handleEditModeClick(isMultiSelect) {
         if (intersects.length > 0) {
             const intersect = intersects[0];
             const key = getClosestEdgeToPoint(intersect.face, intersect.point, selectedObject.geometry);
-            if (!isMultiSelect) clearAllSelections();
-            if (selections.edges.has(key)) {
-                selections.edges.delete(key);
+            if (!isMultiSelect) {
+                const isAlreadyOnlySelected = selections.edges.size === 1 && selections.edges.has(key);
+                if (!isAlreadyOnlySelected) {
+                    clearAllSelections();
+                    selections.edges.add(key);
+                }
             } else {
-                selections.edges.add(key);
+                if (selections.edges.has(key)) {
+                    selections.edges.delete(key);
+                } else {
+                    selections.edges.add(key);
+                }
             }
             changed = true;
         }

@@ -15,6 +15,12 @@ const sceneObjects = [];
 // Edit mode state
 let editSelectionMode = 'VERTEX'; // 'VERTEX', 'EDGE', 'FACE'
 let vertexHelpers, faceHighlightHelper, selectedEdgeHelper;
+let editModeProxy;
+let isDraggingInEditMode = false;
+const dragStartProxyPosition = new THREE.Vector3();
+const initialVertexPositions = new Map();
+const affectedVertexIndices = new Set();
+
 const selections = {
     vertices: new Set(),
     edges: new Set(), // Storing edge keys 'v1-v2'
@@ -73,7 +79,12 @@ function init() {
     orbitControls.dampingFactor = 0.05;
 
     transformControls = new TransformControls(camera, renderer.domElement);
+    transformControls.setMode('translate');
     scene.add(transformControls);
+    
+    editModeProxy = new THREE.Object3D();
+    editModeProxy.name = 'EditModeProxy';
+    scene.add(editModeProxy);
 
     // Initial Object
     let geometry = new THREE.BoxGeometry(1, 1, 1);
@@ -205,10 +216,29 @@ function addEventListeners() {
 
     transformControls.addEventListener('dragging-changed', event => {
         orbitControls.enabled = !event.value;
+        if (!selectedObject) return;
+
+        if (currentMode === 'EDIT') {
+            isDraggingInEditMode = event.value;
+
+            if (isDraggingInEditMode) { // Drag start
+                dragStartProxyPosition.copy(editModeProxy.position);
+                initialVertexPositions.clear();
+                const positions = selectedObject.geometry.attributes.position;
+                for (const index of affectedVertexIndices) {
+                    const pos = new THREE.Vector3().fromBufferAttribute(positions, index);
+                    initialVertexPositions.set(index, pos);
+                }
+            }
+        }
     });
     
     transformControls.addEventListener('objectChange', () => {
-        refreshPane();
+        if (currentMode === 'OBJECT' && selectedObject) {
+            refreshPane();
+        } else if (currentMode === 'EDIT' && isDraggingInEditMode) {
+            applyEditModeTransformation();
+        }
     });
 
     window.addEventListener('keydown', event => {
@@ -309,6 +339,7 @@ function clearAllSelections() {
     updateVertexSelectionVisuals();
     updateEdgeSelectionVisuals();
     updateFaceSelectionVisuals();
+    updateEditModeProxy();
 }
 
 function setMode(newMode) {
@@ -322,6 +353,7 @@ function setMode(newMode) {
         editModeTools.style.display = 'flex';
         setEditSelectionMode('VERTEX');
         transformControls.detach();
+        transformControls.setMode('translate');
         if(pane) pane.element.style.display = 'none';
 
         selectedObject.userData.originalWireframe = selectedObject.material.wireframe;
@@ -364,6 +396,8 @@ function setMode(newMode) {
         editModeTools.style.display = 'none';
         if(pane) pane.element.style.display = 'block';
         
+        transformControls.detach(); // Detach from proxy
+
         if (selectedObject) {
             selectedObject.material.wireframe = selectedObject.userData.originalWireframe;
             if(vertexHelpers) {
@@ -417,20 +451,17 @@ function preprocessGeometry(geometry) {
 
 function handleEditModeClick(isMultiSelect) {
     let changed = false;
-    if (!isMultiSelect) {
-        // Instead of clearing all, we only clear the current selection type
-        // This allows seeing selected verts while selecting edges, for example.
-        // For now, let's clear for simplicity.
-        // selections[editSelectionMode + 's'].clear();
-    }
     
     if (editSelectionMode === 'VERTEX') {
         const intersects = raycaster.intersectObject(vertexHelpers, false);
         if (intersects.length > 0) {
             const index = intersects[0].index;
             if (!isMultiSelect) clearAllSelections();
-            if (selections.vertices.has(index)) selections.vertices.delete(index);
-            else selections.vertices.add(index);
+            if (selections.vertices.has(index)) {
+                selections.vertices.delete(index);
+            } else {
+                selections.vertices.add(index);
+            }
             changed = true;
         }
     } else if (editSelectionMode === 'FACE') {
@@ -438,8 +469,11 @@ function handleEditModeClick(isMultiSelect) {
         if (intersects.length > 0) {
             const faceIndex = intersects[0].faceIndex;
             if (!isMultiSelect) clearAllSelections();
-            if (selections.faces.has(faceIndex)) selections.faces.delete(faceIndex);
-            else selections.faces.add(faceIndex);
+            if (selections.faces.has(faceIndex)) {
+                selections.faces.delete(faceIndex);
+            } else {
+                selections.faces.add(faceIndex);
+            }
             changed = true;
         }
     } else if (editSelectionMode === 'EDGE') {
@@ -448,18 +482,22 @@ function handleEditModeClick(isMultiSelect) {
             const intersect = intersects[0];
             const key = getClosestEdgeToPoint(intersect.face, intersect.point, selectedObject.geometry);
             if (!isMultiSelect) clearAllSelections();
-            if (selections.edges.has(key)) selections.edges.delete(key);
-            else selections.edges.add(key);
+            if (selections.edges.has(key)) {
+                selections.edges.delete(key);
+            } else {
+                selections.edges.add(key);
+            }
             changed = true;
         }
     }
 
-    if (!changed) {
+    if (!changed && !isMultiSelect) {
         clearAllSelections();
-    } else {
+    } else if (changed) {
         updateVertexSelectionVisuals();
         updateEdgeSelectionVisuals();
         updateFaceSelectionVisuals();
+        updateEditModeProxy();
     }
 }
 
@@ -534,6 +572,88 @@ function getClosestEdgeToPoint(face, point, geometry) {
     }
     
     return closestEdge[0] < closestEdge[1] ? `${closestEdge[0]}-${closestEdge[1]}` : `${closestEdge[1]}-${closestEdge[0]}`;
+}
+
+// --- EDIT MODE TRANSFORMATION ---
+
+function collectAffectedVertexIndices() {
+    affectedVertexIndices.clear();
+    if (!selectedObject) return;
+
+    const index = selectedObject.geometry.index;
+
+    // From selected vertices
+    for (const vertIndex of selections.vertices) {
+        affectedVertexIndices.add(vertIndex);
+    }
+
+    // From selected edges
+    for (const edgeKey of selections.edges) {
+        const [v1, v2] = allEdges.get(edgeKey);
+        affectedVertexIndices.add(v1);
+        affectedVertexIndices.add(v2);
+    }
+    
+    // From selected faces
+    for (const faceIndex of selections.faces) {
+        affectedVertexIndices.add(index.getX(faceIndex * 3));
+        affectedVertexIndices.add(index.getX(faceIndex * 3 + 1));
+        affectedVertexIndices.add(index.getX(faceIndex * 3 + 2));
+    }
+}
+
+function updateEditModeProxy() {
+    if (!selectedObject || currentMode !== 'EDIT') {
+        transformControls.detach();
+        return;
+    }
+
+    collectAffectedVertexIndices();
+
+    if (affectedVertexIndices.size === 0) {
+        transformControls.detach();
+        return;
+    }
+
+    const center = new THREE.Vector3();
+    const positions = selectedObject.geometry.attributes.position;
+    
+    for (const index of affectedVertexIndices) {
+        const pos = new THREE.Vector3().fromBufferAttribute(positions, index);
+        center.add(pos);
+    }
+    center.divideScalar(affectedVertexIndices.size);
+
+    // Center is in local space, transform to world space for the proxy
+    center.applyMatrix4(selectedObject.matrixWorld);
+
+    editModeProxy.position.copy(center);
+    transformControls.attach(editModeProxy);
+}
+
+function applyEditModeTransformation() {
+    if (!isDraggingInEditMode || affectedVertexIndices.size === 0) return;
+
+    const worldDelta = editModeProxy.position.clone().sub(dragStartProxyPosition);
+    
+    // Convert world delta to local delta by reversing object transforms
+    const localDelta = worldDelta.clone();
+    const invQuaternion = selectedObject.quaternion.clone().invert();
+    localDelta.applyQuaternion(invQuaternion);
+    localDelta.divide(selectedObject.scale);
+
+    const positions = selectedObject.geometry.attributes.position;
+    initialVertexPositions.forEach((initialPos, index) => {
+        const newPos = initialPos.clone().add(localDelta);
+        positions.setXYZ(index, newPos.x, newPos.y, newPos.z);
+    });
+
+    positions.needsUpdate = true;
+    selectedObject.geometry.computeVertexNormals(); // Recalculate normals for correct lighting
+
+    // Update helpers that depend on vertex positions
+    updateEdgeSelectionVisuals();
+    updateFaceSelectionVisuals();
 }
 
 init();
